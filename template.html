@@ -842,7 +842,8 @@
       const tl = f.querySelector("button");
       tl.disabled = true; tl.textContent = "Ukládám…"; chyba.hidden = true;
       try {
-        const res = await fetch(TABULKA, {
+        // select= jen povolené sloupce — sloupec skryto anon číst nesmí.
+        const res = await fetch(TABULKA + "?select=id,depese,iv,ct,created_at", {
           method: "POST",
           headers: { apikey: SUPABASE_KLIC,
             "Content-Type": "application/json", Prefer: "return=representation" },
