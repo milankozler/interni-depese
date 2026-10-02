@@ -422,6 +422,83 @@
     padding: 24px 0;
   }
 
+  /* ---------- komentáře ---------- */
+
+  .komentare {
+    margin-top: 30px;
+    border-top: 1px solid var(--line-soft);
+    padding-top: 20px;
+    max-width: 65ch;
+  }
+  .kom-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .kom-pocet {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    border-radius: 2px;
+    padding: 2px 6px;
+    letter-spacing: .02em;
+  }
+  .kom-stav, .kom-chyba {
+    font-family: var(--display);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--warm);
+    margin: 0 0 12px;
+  }
+  .kom-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+  .kom-list li {
+    display: grid;
+    gap: 3px;
+    border-left: 2px solid var(--accent);
+    padding-left: 14px;
+  }
+  .kom-meta {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .kom-kdo { color: var(--ink-soft); font-weight: 500; }
+  .kom-kdo.anon { font-style: italic; font-weight: 400; }
+  .kom-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .kom-form { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .kom-form textarea, .kom-form input {
+    width: 100%;
+    font-family: var(--body);
+    font-size: 16px;
+    color: var(--ink);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 9px 11px;
+  }
+  .kom-form textarea { resize: vertical; min-height: 76px; line-height: 1.5; }
+  .kom-form textarea::placeholder, .kom-form input::placeholder { color: var(--ink-faint); }
+  .kom-radek { display: flex; flex-wrap: wrap; gap: 10px; }
+  .kom-radek input { flex: 1 1 180px; width: auto; min-width: 0; }
+  .kom-radek .btn { flex: none; }
+  .btn:disabled { opacity: .6; cursor: progress; }
+  .kom-pozn { margin: 0; font-size: 13.5px; color: var(--ink-faint); }
+  .rail-kom {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--ink-faint);
+    margin-top: 2px;
+  }
+  .rail-kom:empty { display: none; }
+
   /* ---------- patička ---------- */
 
   .paticka {
@@ -557,10 +634,12 @@
   function vykresliVse() {
   VIDITELNE = DEPESE.filter((d) => !d.skryto);
   VIDITELNE.forEach((d) => {
-    stream.appendChild(vykresliDepesi(d));
+    const el = vykresliDepesi(d);
+    el.appendChild(sekceKomentaru(d.cislo));
+    stream.appendChild(el);
     const li = document.createElement("li");
     li.innerHTML = '<a href="#depese-' + d.cislo + '"><span class="n">' + cisloText(d.cislo) +
-      '</span><span class="t">' + esc(d.titulek) + "</span></a>";
+      '</span><span class="t">' + esc(d.titulek) + '<span class="rail-kom" id="rail-kom-' + d.cislo + '"></span></span></a>';
     rejstrik.appendChild(li);
   });
 
@@ -613,62 +692,194 @@
     }, 2500);
   });
 
-  // ---------- brána ----------
-  // Jednoduchý zámek proti náhodnému kolemjdoucímu, ne skutečné zabezpečení.
-  // Obsah je zašifrovaný (PBKDF2 + AES-GCM). Bez hesla se z kódu stránky přečíst nedá.
-  const KLIC = "depese-klic";
+  // ---------- šifrování ----------
+  // Heslo -> PBKDF2 (pevná sůl) -> hlavní klíč -> HKDF: zvlášť klíč pro obsah a pro komentáře.
+  // Bez hesla nejde přečíst ani obsah, ani komentáře (v databázi je jen šifrovaný text).
+  const SUL = "O6VeIX/DjDQtfaqLNH9Odg==";
+  const ITERACE = 600000;
+  const KLIC = "depese-klic-v2";
+  const SUPABASE_URL = "https://ymjedsrhsbkiipnpfwlm.supabase.co";
+  const SUPABASE_KLIC = "sb_publishable_rdTlZvmWK9iRaY_5ynJufw_HIvOdfLN";
+  const TABULKA = SUPABASE_URL + "/rest/v1/depese_komentare";
 
   const brana = document.getElementById("brana");
   const branaForm = document.getElementById("brana-form");
   const branaChyba = document.getElementById("brana-chyba");
   const obsah = document.getElementById("obsah");
   let vykresleno = false;
+  let klicKomentare = null;
 
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
   const b64d = (t) => Uint8Array.from(atob(t), (c) => c.charCodeAt(0));
-  const b64e = (u) => btoa(String.fromCharCode(...new Uint8Array(u)));
+  const b64e = (u) => { const a = new Uint8Array(u); let s = ""; for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); };
 
-  async function odvodKlic(heslo) {
-    const zaklad = await crypto.subtle.importKey("raw", new TextEncoder().encode(heslo.trim()), "PBKDF2", false, ["deriveKey"]);
-    return crypto.subtle.deriveKey(
-      { name: "PBKDF2", salt: b64d(PAYLOAD.salt), iterations: PAYLOAD.iter, hash: "SHA-256" },
-      zaklad, { name: "AES-GCM", length: 256 }, true, ["decrypt"]);
+  async function hlavniBity(heslo) {
+    const z = await crypto.subtle.importKey("raw", enc.encode(heslo.trim()), "PBKDF2", false, ["deriveBits"]);
+    return crypto.subtle.deriveBits({ name: "PBKDF2", salt: b64d(SUL), iterations: ITERACE, hash: "SHA-256" }, z, 256);
   }
 
-  async function desifruj(klic) {
-    const data = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(PAYLOAD.iv) }, klic, b64d(PAYLOAD.ct));
-    return JSON.parse(new TextDecoder().decode(data));
+  async function klice(bity) {
+    const hk = await crypto.subtle.importKey("raw", bity, "HKDF", false, ["deriveKey"]);
+    const odvod = (info) => crypto.subtle.deriveKey(
+      { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: enc.encode(info) },
+      hk, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    return { obsah: await odvod("depese-obsah"), komentare: await odvod("depese-komentare") };
   }
 
-  function odemkni(data) {
+  async function desifrujObsah(k) {
+    const data = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(PAYLOAD.iv) }, k, b64d(PAYLOAD.ct));
+    return JSON.parse(dec.decode(data));
+  }
+
+  async function odemkniBity(bity, ulozit) {
+    const k = await klice(bity);
+    const data = await desifrujObsah(k.obsah);
+    if (ulozit) { try { localStorage.setItem(KLIC, b64e(bity)); } catch (e) { /* nevadí */ } }
+    klicKomentare = k.komentare;
     DEPESE = data;
     if (!vykresleno) { vykresliVse(); vykresleno = true; }
     brana.hidden = true;
     obsah.hidden = false;
+    nactiKomentare();
   }
 
   (async () => {
     try {
       const ulozeny = localStorage.getItem(KLIC);
-      if (!ulozeny) return;
-      const klic = await crypto.subtle.importKey("raw", b64d(ulozeny), "AES-GCM", false, ["decrypt"]);
-      odemkni(await desifruj(klic));
+      if (ulozeny) await odemkniBity(b64d(ulozeny), false);
     } catch (e) { /* starý klíč nebo nedostupné úložiště — projde se přes formulář */ }
   })();
 
   branaForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const zadano = document.getElementById("heslo").value;
+    const tl = branaForm.querySelector("button");
+    tl.disabled = true;
     try {
-      const klic = await odvodKlic(zadano);
-      const data = await desifruj(klic);
-      try { localStorage.setItem(KLIC, b64e(await crypto.subtle.exportKey("raw", klic))); } catch (e) { /* nevadí */ }
+      await odemkniBity(await hlavniBity(document.getElementById("heslo").value), true);
       branaChyba.hidden = true;
-      odemkni(data);
     } catch (e) {
       branaChyba.hidden = false;
       document.getElementById("heslo").select();
     }
+    tl.disabled = false;
   });
+
+  // ---------- komentáře ----------
+  const JMENO = "depese-jmeno";
+  const aad = (n) => enc.encode("depese-" + n);
+  const KOMENTARE = {}; // cislo -> [{jmeno, text, kdy}]
+
+  async function zasifrujKomentar(n, jmeno, text) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad(n) }, klicKomentare,
+      enc.encode(JSON.stringify({ j: jmeno, t: text })));
+    return { depese: n, iv: b64e(iv), ct: b64e(ct) };
+  }
+
+  async function desifrujKomentar(r) {
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(r.iv), additionalData: aad(r.depese) }, klicKomentare, b64d(r.ct));
+    const o = JSON.parse(dec.decode(pt));
+    return { jmeno: String(o.j || "").slice(0, 60), text: String(o.t || ""), kdy: new Date(r.created_at) };
+  }
+
+  const kdyText = (d) => d.toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric", year: "numeric" }) +
+    " " + d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" });
+
+  const pocetText = (n) => n === 1 ? "1 komentář" : n >= 2 && n <= 4 ? n + " komentáře" : n + " komentářů";
+
+  function vykresliKomentare(n) {
+    const sekce = document.getElementById("komentare-" + n);
+    if (!sekce) return;
+    const seznam = KOMENTARE[n] || [];
+    const ul = sekce.querySelector(".kom-list");
+    ul.innerHTML = "";
+    seznam.forEach((k) => {
+      const li = document.createElement("li");
+      const meta = document.createElement("span");
+      meta.className = "kom-meta";
+      const kdo = document.createElement("span");
+      kdo.className = "kom-kdo" + (k.jmeno ? "" : " anon");
+      kdo.textContent = k.jmeno || "anonym";
+      meta.append(kdo, " · " + kdyText(k.kdy));
+      const p = document.createElement("p");
+      p.className = "kom-text";
+      p.textContent = k.text;
+      li.append(meta, p);
+      ul.appendChild(li);
+    });
+    sekce.querySelector(".kom-pocet").textContent = seznam.length;
+    sekce.querySelector(".kom-pocet").hidden = !seznam.length;
+    const r = document.getElementById("rail-kom-" + n);
+    if (r) { r.textContent = seznam.length ? pocetText(seznam.length) : ""; }
+  }
+
+  function sekceKomentaru(n) {
+    const s = document.createElement("section");
+    s.className = "komentare";
+    s.id = "komentare-" + n;
+    s.innerHTML =
+      '<p class="kom-label">Komentáře <span class="kom-pocet" hidden></span></p>' +
+      '<p class="kom-stav" hidden></p>' +
+      '<ul class="kom-list"></ul>' +
+      '<form class="kom-form">' +
+        '<textarea name="text" rows="3" maxlength="2000" required placeholder="Napiš, co si o tom myslíš…" aria-label="Komentář"></textarea>' +
+        '<div class="kom-radek">' +
+          '<input name="jmeno" type="text" maxlength="60" autocomplete="name" placeholder="Jméno (nepovinné)" aria-label="Jméno">' +
+          '<button class="btn" type="submit">Přidat komentář</button>' +
+        '</div>' +
+        '<p class="kom-pozn">Bez jména se komentář zobrazí jako anonymní. Vidí ho všichni ve firmě.</p>' +
+        '<p class="kom-chyba" hidden></p>' +
+      '</form>';
+    const f = s.querySelector("form");
+    try { f.jmeno.value = localStorage.getItem(JMENO) || ""; } catch (e) { /* nevadí */ }
+    f.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const text = f.text.value.trim();
+      const jmeno = f.jmeno.value.trim();
+      const chyba = f.querySelector(".kom-chyba");
+      if (!text) return;
+      const tl = f.querySelector("button");
+      tl.disabled = true; tl.textContent = "Ukládám…"; chyba.hidden = true;
+      try {
+        const res = await fetch(TABULKA, {
+          method: "POST",
+          headers: { apikey: SUPABASE_KLIC, Authorization: "Bearer " + SUPABASE_KLIC,
+            "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify(await zasifrujKomentar(n, jmeno, text)),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const [radek] = await res.json();
+        (KOMENTARE[n] = KOMENTARE[n] || []).push(await desifrujKomentar(radek));
+        vykresliKomentare(n);
+        f.text.value = "";
+        try { localStorage.setItem(JMENO, jmeno); } catch (e) { /* nevadí */ }
+      } catch (e) {
+        chyba.textContent = "Komentář se nepodařilo uložit. Zkus to za chvíli znovu.";
+        chyba.hidden = false;
+      }
+      tl.disabled = false; tl.textContent = "Přidat komentář";
+    });
+    return s;
+  }
+
+  async function nactiKomentare() {
+    const stavy = document.querySelectorAll(".kom-stav");
+    try {
+      const res = await fetch(TABULKA + "?select=id,depese,iv,ct,created_at&order=created_at.asc&limit=2000",
+        { headers: { apikey: SUPABASE_KLIC, Authorization: "Bearer " + SUPABASE_KLIC } });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const radky = await res.json();
+      for (const k in KOMENTARE) delete KOMENTARE[k];
+      for (const r of radky) {
+        try { (KOMENTARE[r.depese] = KOMENTARE[r.depese] || []).push(await desifrujKomentar(r)); } catch (e) { /* cizí nebo poškozený záznam přeskočit */ }
+      }
+      stavy.forEach((s) => { s.hidden = true; });
+    } catch (e) {
+      stavy.forEach((s) => { s.textContent = "Komentáře se teď nepodařilo načíst."; s.hidden = false; });
+    }
+    VIDITELNE.forEach((d) => vykresliKomentare(d.cislo));
+  }
 
   const hledat = document.getElementById("hledat");
   hledat.addEventListener("input", () => {
