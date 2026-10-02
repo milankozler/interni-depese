@@ -844,7 +844,7 @@
       try {
         const res = await fetch(TABULKA, {
           method: "POST",
-          headers: { apikey: SUPABASE_KLIC, Authorization: "Bearer " + SUPABASE_KLIC,
+          headers: { apikey: SUPABASE_KLIC,
             "Content-Type": "application/json", Prefer: "return=representation" },
           body: JSON.stringify(await zasifrujKomentar(n, jmeno, text)),
         });
@@ -867,7 +867,7 @@
     const stavy = document.querySelectorAll(".kom-stav");
     try {
       const res = await fetch(TABULKA + "?select=id,depese,iv,ct,created_at&order=created_at.asc&limit=2000",
-        { headers: { apikey: SUPABASE_KLIC, Authorization: "Bearer " + SUPABASE_KLIC } });
+        { headers: { apikey: SUPABASE_KLIC } });
       if (!res.ok) throw new Error("HTTP " + res.status);
       const radky = await res.json();
       for (const k in KOMENTARE) delete KOMENTARE[k];
